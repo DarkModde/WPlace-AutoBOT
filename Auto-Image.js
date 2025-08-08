@@ -84,8 +84,42 @@
       waitingInit: "Waiting for initialization...",
       resizeSuccess: "✅ Image resized to {width}x{height}",
       paintingPaused: "⏸️ Painting paused at position X: {x}, Y: {y}"
-    }
-  };
+  },
+  fr: {
+    title: "WPlace Auto-Image",
+    initBot: "Démarrer Auto-BOT",
+    uploadImage: "Télécharger l'image",
+    resizeImage: "Redimensionner l'image",
+    selectPosition: "Sélectionner la position",
+    startPainting: "Commencer la peinture",
+    stopPainting: "Arrêter la peinture",
+    checkingColors: "🔍 Vérification des couleurs disponibles...",
+    noColorsFound: "❌ Ouvrez la palette de couleurs sur le site et réessayez !",
+    colorsFound: "✅ {count} couleurs disponibles trouvées",
+    loadingImage: "🖼️ Chargement de l'image...",
+    imageLoaded: "✅ Image chargée avec {count} pixels valides",
+    imageError: "❌ Erreur lors du chargement de l'image",
+    selectPositionAlert: "Peignez le premier pixel à l’endroit où vous souhaitez commencer l’art !",
+    waitingPosition: "👆 En attente que vous peigniez le pixel de référence...",
+    positionSet: "✅ Position définie avec succès !",
+    positionTimeout: "❌ Temps écoulé pour la sélection de la position",
+    startPaintingMsg: "🎨 Début de la peinture...",
+    paintingProgress: "🧱 Progression : {painted}/{total} pixels...",
+    noCharges: "⌛ Pas de charges. Attente de {time}...",
+    paintingStopped: "⏹️ Peinture arrêtée par l’utilisateur",
+    paintingComplete: "✅ Peinture terminée ! {count} pixels peints.",
+    paintingError: "❌ Erreur pendant la peinture",
+    missingRequirements: "❌ Veuillez d'abord télécharger une image et sélectionner une position",
+    progress: "Progression",
+    pixels: "Pixels",
+    charges: "Charges",
+    estimatedTime: "Temps estimé",
+    initMessage: "Cliquez sur 'Démarrer Auto-BOT' pour commencer",
+    waitingInit: "En attente de l'initialisation...",
+    resizeSuccess: "✅ Image redimensionnée à {width}x{height}",
+    paintingPaused: "⏸️ Peinture en pause à la position X : {x}, Y : {y}"
+  }
+};
 
   const state = {
     running: false,
