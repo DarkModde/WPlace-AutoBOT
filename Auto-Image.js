@@ -173,7 +173,8 @@
     minimized: false,
     lastPosition: { x: 0, y: 0 },
     estimatedTime: 0,
-    language: 'en'
+    language: 'en',
+    cachedImages: {}
   };
 
   async function detectLanguage() {
@@ -1119,6 +1120,86 @@
     });
   }
 
+   async function getPixelColorAndClosestId(regionX, regionY, coord) {
+    const CACHE_DURATION = 15000; // 15 seconds
+    const imageUrl = `https://backend.wplace.live/files/s0/tiles/${regionX}/${regionY}.png`;
+
+    try {
+      let canvas;
+      let ctx;
+
+      // Check cache first
+      if (
+        state.cachedImages[imageUrl] &&
+        Date.now() - state.cachedImages[imageUrl].timestamp < CACHE_DURATION
+      ) {
+        canvas = state.cachedImages[imageUrl].canvas;
+        ctx = canvas.getContext("2d");
+      } else {
+        const response = await fetch(imageUrl);
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const imageBlob = await response.blob();
+        const img = new Image();
+        img.crossOrigin = "Anonymous"; // Required for CORS to avoid tainted canvas
+
+        await new Promise((resolve, reject) => {
+          img.onload = () => {
+            resolve();
+          };
+          img.onerror = reject;
+          img.src = URL.createObjectURL(imageBlob);
+        });
+
+        canvas = document.createElement("canvas");
+        ctx = canvas.getContext("2d");
+        canvas.width = img.width;
+        canvas.height = img.height;
+        ctx.drawImage(img, 0, 0);
+
+        // Store in cache
+        state.cachedImages[imageUrl] = {
+          timestamp: Date.now(),
+          canvas: canvas,
+        };
+
+        URL.revokeObjectURL(img.src); // Clean up the object URL
+      }
+
+      if (state.availableColors.length === 0) {
+        state.availableColors = Utils.extractAvailableColors();
+        if (state.availableColors.length === 0) {
+          console.error(
+            "No available colors found to map to. Please ensure the color palette is open on the site."
+          );
+          return null; // Return null if no colors are found
+        }
+      }
+
+      const { x, y } = coord;
+      // Check if coordinates are within image bounds
+      if (x >= 0 && x < canvas.width && y >= 0 && y < canvas.height) {
+        const pixelData = ctx.getImageData(x, y, 1, 1).data;
+        const [r, g, b, a] = pixelData;
+
+        const closestColorId = findClosestColor(
+          [r, g, b],
+          state.availableColors
+        );
+        return closestColorId;
+      } else {
+        console.warn(`Coordinates (${x},${y}) are out of image bounds.`);
+        return null;
+      }
+    } catch (error) {
+      console.error("Error in getPixelColorAndClosestId:", error);
+      // Clear cache for this URL on error to force re-fetch next time
+      delete state.cachedImages[imageUrl];
+      return null;
+    }
+  }
+
   async function processImage() {
     const { width, height, pixels } = state.imageData;
     const { x: startX, y: startY } = state.startPosition;
@@ -1136,6 +1217,8 @@
           break outerLoop;
         }
         
+        const pixelX = startX + x;
+        const pixelY = startY + y;
         const idx = (y * width + x) * 4;
         const r = pixels[idx];
         const g = pixels[idx + 1];
@@ -1147,6 +1230,35 @@
         
         const rgb = [r, g, b];
         const colorId = findClosestColor(rgb, state.availableColors);
+
+        const currentPixelColorId = await getPixelColorAndClosestId(
+          regionX,
+          regionY,
+          {
+            x: pixelX,
+            y: pixelY,
+          }
+        );
+
+        if (currentPixelColorId === colorId) {
+          // the pixel is already painted how we want 
+          state.paintedPixels++;
+          state.estimatedTime = Utils.calculateEstimatedTime(
+            state.totalPixels - state.paintedPixels,
+            state.currentCharges,
+            state.cooldown
+          );
+
+          if (state.paintedPixels % CONFIG.LOG_INTERVAL === 0) {
+            updateStats();
+            updateUI("paintingProgress", "default", {
+              painted: state.paintedPixels,
+              total: state.totalPixels,
+            });
+          }
+
+          continue;
+        }
         
         if (state.currentCharges < 1) {
           updateUI('noCharges', 'warning', { time: Utils.formatTime(state.cooldown) });
@@ -1157,8 +1269,6 @@
           state.cooldown = chargeUpdate.cooldown;
         }
         
-        const pixelX = startX + x;
-        const pixelY = startY + y;
         
         const success = await WPlaceService.paintPixelInRegion(
           regionX,
