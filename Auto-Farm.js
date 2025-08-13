@@ -579,164 +579,201 @@
     return false;
   };
 
-  // Detección especializada para el desafío actual de Cloudflare checkbox
-  const findChallengeElements = () => {
-    const candidates = [];
-    const isVisible = (el) => {
+  // Sistema de detección avanzado de Cloudflare
+  let cloudflareDetected = false;
+  let cfMutationObserver = null;
+  let cfCheckInterval = null;
+  
+  // Detectar carga de recursos de Cloudflare desde network/performance
+  const detectCloudflareFromNetwork = () => {
+    try {
+      // Buscar en recursos cargados
+      const entries = performance.getEntriesByType('resource');
+      const cfResources = entries.filter(entry => 
+        entry.name.includes('challenges.cloudflare.com') ||
+        entry.name.includes('cdn-cgi/challenge-platform') ||
+        entry.name.includes('cf-challenge')
+      );
+      
+      if (cfResources.length > 0) {
+        console.log('🔍 Cloudflare detectado desde recursos de red:', cfResources.length);
+        return true;
+      }
+      
+      // Buscar scripts CF cargados
+      const cfScripts = Array.from(document.scripts).filter(script => 
+        script.src && (
+          script.src.includes('challenges.cloudflare.com') ||
+          script.src.includes('cdn-cgi/challenge-platform')
+        )
+      );
+      
+      return cfScripts.length > 0;
+    } catch {
+      return false;
+    }
+  };
+  
+  // Detección ultra-rápida de elementos CF visibles
+  const findVisibleChallengeElements = () => {
+    const isReallyVisible = (el) => {
+      if (!el) return false;
       try {
-        const r = el.getBoundingClientRect();
-        const st = window.getComputedStyle(el);
-        return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none';
-      } catch { return false; }
+        const rect = el.getBoundingClientRect();
+        const style = window.getComputedStyle(el);
+        return rect.width > 0 && 
+               rect.height > 0 && 
+               style.display !== 'none' && 
+               style.visibility !== 'hidden' &&
+               style.opacity !== '0' &&
+               rect.top >= 0 && 
+               rect.left >= 0;
+      } catch {
+        return false;
+      }
     };
     
-    try {
-      // Prioridad 1: Buscar el checkbox específico del desafío actual
-      const humanVerifyCheckbox = document.querySelector('.cb-lb input[type="checkbox"]');
-      if (humanVerifyCheckbox && isVisible(humanVerifyCheckbox)) {
-        candidates.push(humanVerifyCheckbox);
-      }
+    // Búsqueda prioritaria de elementos CF
+    const selectors = [
+      // Checkbox específico del desafío actual
+      '.cb-lb input[type="checkbox"]',
+      'input[type="checkbox"][data-cf]',
+      'input[type="checkbox"][aria-label*="human"]',
       
-      // Prioridad 2: Buscar el label clickeable
-      const humanVerifyLabel = document.querySelector('.cb-lb');
-      if (humanVerifyLabel && isVisible(humanVerifyLabel)) {
-        candidates.push(humanVerifyLabel);
-      }
+      // Labels clickeables
+      '.cb-lb',
+      'label[for*="challenge"]',
       
-      // Prioridad 3: Buscar por texto en múltiples idiomas
-      const verificationTexts = [
-        // Español
-        'verifica que eres un ser humano', 'verificar que', 'soy humano',
-        // Inglés
-        'verify you are human', 'i am human', 'verify that you are human',
-        // Portugués
-        'verifique que você é humano', 'verificar que', 'sou humano',
-        // Francés
-        'vérifiez que vous êtes humain', 'vérifier que', 'je suis humain',
-        // Ruso
-        'подтвердите что вы человек', 'проверить что', 'я человек',
-        // Holandés
-        'controleer dat je een mens bent', 'verifieer dat', 'ik ben een mens',
-        // Ucraniano
-        'підтвердіть що ви людина', 'перевірити що', 'я людина'
-      ];
+      // Contenedores CF
+      '.cf-challenge',
+      '.cf-turnstile',
+      '#challenge-overlay',
+      '[data-sitekey]',
+      '.main-wrapper.theme-auto',
       
-      const labels = Array.from(document.querySelectorAll('label, .cb-lb-t, span'));
-      for (const label of labels) {
-        const text = (label.textContent || '').toLowerCase();
-        const isVerificationText = verificationTexts.some(vText => text.includes(vText));
-        
-        if (isVerificationText) {
-          if (isVisible(label)) {
-            candidates.push(label);
-            // Buscar el checkbox padre o hermano
-            const parentLabel = label.closest('.cb-lb');
-            if (parentLabel) {
-              const checkbox = parentLabel.querySelector('input[type="checkbox"]');
-              if (checkbox && isVisible(checkbox)) candidates.push(checkbox);
-            }
-          }
-        }
-      }
-      
-      // Prioridad 4: Contenedor del desafío
-      const challengeContainer = document.querySelector('.cb-c[role="alert"]');
-      if (challengeContainer && isVisible(challengeContainer)) {
-        candidates.push(challengeContainer);
-      }
-      
-      // Fallback: Otros selectores de Cloudflare
-      const fallbackSelectors = [
-        'div[id^="cf-chl-widget"]', '.cf-turnstile', '.cf-challenge',
-        '#challenge-overlay', '[data-sitekey][data-cf]'
-      ];
-      for (const sel of fallbackSelectors) {
-        const els = Array.from(document.querySelectorAll(sel));
-        for (const el of els) {
-          if (isVisible(el)) candidates.push(el);
-        }
-      }
-    } catch {}
+      // Fallbacks
+      'div[id^="cf-chl-widget"]',
+      '[data-cf-challenge]'
+    ];
     
-    // Quitar duplicados y priorizar checkboxes primero, luego por tamaño
-    const uniq = Array.from(new Set(candidates));
-    return uniq
-      .filter(isVisible)
-      .sort((a, b) => {
-        // Priorizar checkboxes
-        const aIsCheckbox = a.type === 'checkbox';
-        const bIsCheckbox = b.type === 'checkbox';
-        if (aIsCheckbox && !bIsCheckbox) return -1;
-        if (!aIsCheckbox && bIsCheckbox) return 1;
-        
-        // Luego por tamaño
-        const ra = a.getBoundingClientRect();
-        const rb = b.getBoundingClientRect();
-        return (rb.width * rb.height) - (ra.width * ra.height);
-      });
+    for (const selector of selectors) {
+      const elements = document.querySelectorAll(selector);
+      for (const el of elements) {
+        if (isReallyVisible(el)) {
+          console.log(`✅ Elemento CF visible encontrado: ${selector}`);
+          return el;
+        }
+      }
+    }
+    
+    return null;
+  };
+  
+  // Detección por contenido de texto multiidioma mejorada
+  const detectChallengeByText = () => {
+    const texts = [
+      // Español
+      'verifica que eres un ser humano', 'verificar que', 'soy humano', 'cloudflare',
+      // Inglés  
+      'verify you are human', 'i am human', 'checking your browser', 'just a moment',
+      // Francés
+      'vérifiez que vous êtes humain', 'je suis humain', 'vérification',
+      // Ruso
+      'подтвердите что вы человек', 'я человек', 'проверка',
+      // Holandés
+      'controleer dat je een mens bent', 'ik ben een mens',
+      // Ucraniano
+      'підтвердіть що ви людина', 'я людина'
+    ];
+    
+    const bodyText = (document.body?.textContent || '').toLowerCase();
+    const titleText = (document.title || '').toLowerCase();
+    
+    return texts.some(text => bodyText.includes(text) || titleText.includes(text));
   };
 
-  // Detección especializada para el desafío checkbox actual
-  const isChallengeLikely = () => {
-    try {
-      // Detectar específicamente el desafío de checkbox actual
-      const hasMainWrapper = document.querySelector('.main-wrapper.theme-auto.size-normal.lang-es-es') || 
-                             document.querySelector('.main-wrapper.theme-auto') ||
-                             document.querySelector('.main-wrapper');
-      
-      const hasCheckboxChallenge = document.querySelector('.cb-lb input[type="checkbox"]');
-      const hasVerifyText = document.querySelector('.cb-lb-t');
-      const hasContentAlert = document.querySelector('#content[aria-live="polite"]');
-      
-      // Si tiene estos elementos específicos, es el desafío actual
-      if (hasMainWrapper && hasCheckboxChallenge && hasVerifyText) return true;
-      if (hasContentAlert && hasCheckboxChallenge) return true;
-      
-      // Buscar texto específico del desafío en múltiples idiomas
-      const bodyText = (document.body?.textContent || '').toLowerCase();
-      const verificationTexts = [
-        // Español
-        'verifica que eres un ser humano', 'verificar que', 'soy humano',
-        // Inglés
-        'verify you are human', 'i am human', 'verify that you are human',
-        // Portugués
-        'verifique que você é humano', 'verificar que', 'sou humano',
-        // Francés
-        'vérifiez que vous êtes humain', 'vérifier que', 'je suis humain',
-        // Ruso
-        'подтвердите что вы человек', 'проверить что', 'я человек',
-        // Holandés
-        'controleer dat je een mens bent', 'verifieer dat', 'ik ben een mens',
-        // Ucraniano
-        'підтвердіть що ви людина', 'перевірити що', 'я людина'
-      ];
-      
-      if (verificationTexts.some(text => bodyText.includes(text))) return true;
-      
-      // Fallbacks para otros tipos de desafío CF
-      const title = (document.title || '').toLowerCase();
-      const checkingTexts = [
-        'checking your browser', 'just a moment', 'please wait',
-        'verificando su navegador', 'un momento por favor', 'espere por favor',
-        'vérification de votre navigateur', 'un moment s\'il vous plaît',
-        'проверка браузера', 'подождите пожалуйста',
-        'browser controleren', 'een moment alstublieft',
-        'перевірка браузера', 'зачекайте будь ласка'
-      ];
-      if (checkingTexts.some(text => title.includes(text))) return true;
-      
-      const hasCFScript = Array.from(document.scripts || [])
-        .some(s => (s.src || '').toLowerCase().includes('/cdn-cgi/challenge-platform'));
-      if (hasCFScript) return true;
-      
-      if (document.querySelector('#challenge-overlay')) return true;
-    } catch {}
-    return false;
+  // Detección robusta combinando network + DOM + texto
+  const isCloudflareChallenge = () => {
+    // 1. Detectar desde recursos de red
+    const networkDetection = detectCloudflareFromNetwork();
+    
+    // 2. Buscar elementos visibles
+    const visibleElement = findVisibleChallengeElements();
+    
+    // 3. Detectar por texto
+    const textDetection = detectChallengeByText();
+    
+    // Cloudflare está presente si:
+    // - Se detectó desde network Y (hay elementos visibles O texto coincidente)
+    // - O si hay elementos claramente visibles con texto coincidente
+    const detected = (networkDetection && (visibleElement || textDetection)) || 
+                     (visibleElement && textDetection);
+    
+    if (detected && !cloudflareDetected) {
+      cloudflareDetected = true;
+      console.log('🚨 CLOUDFLARE DETECTADO:', {
+        network: networkDetection,
+        visible: !!visibleElement,
+        text: textDetection
+      });
+    }
+    
+    return detected;
   };
 
   const isChallengePresent = () => {
-    const hasEls = findChallengeElements().length > 0;
-    return hasEls || isChallengeLikely();
+    return isCloudflareChallenge();
+  };
+
+  // Click ultra-rápido y eficiente en el checkbox
+  const clickChallengeElement = async (element) => {
+    if (!element) return false;
+    
+    try {
+      // Scroll al elemento para asegurar visibilidad
+      element.scrollIntoView({ behavior: 'instant', block: 'center' });
+      
+      // Esperar un frame para que el scroll complete
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      
+      // Multiple estrategias de click para máxima compatibilidad
+      const clickMethods = [
+        () => element.click(),
+        () => element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })),
+        () => {
+          const rect = element.getBoundingClientRect();
+          const x = rect.left + rect.width / 2;
+          const y = rect.top + rect.height / 2;
+          element.dispatchEvent(new MouseEvent('click', {
+            bubbles: true,
+            cancelable: true,
+            clientX: x,
+            clientY: y
+          }));
+        }
+      ];
+      
+      // Intentar cada método hasta que uno funcione
+      for (const method of clickMethods) {
+        try {
+          method();
+          await new Promise(resolve => setTimeout(resolve, 100)); // Breve pausa
+          
+          // Verificar si el click tuvo efecto
+          if (element.checked || element.getAttribute('aria-checked') === 'true') {
+            console.log('✅ Click exitoso en checkbox CF');
+            return true;
+          }
+        } catch (err) {
+          console.log('⚠️ Método de click falló:', err.message);
+        }
+      }
+      
+      return false;
+    } catch (err) {
+      console.error('❌ Error en clickChallengeElement:', err);
+      return false;
+    }
   };
 
   const clickElementCenter = (el) => {
@@ -751,50 +788,103 @@
     return true;
   };
 
+  // Sistema de monitoreo activo de Cloudflare
+  const startCloudflareMonitoring = () => {
+    // Detener monitoreo anterior si existe
+    if (cfMutationObserver) {
+      cfMutationObserver.disconnect();
+    }
+    if (cfCheckInterval) {
+      clearInterval(cfCheckInterval);
+    }
+    
+    // MutationObserver para detectar cambios DOM de CF
+    cfMutationObserver = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        // Detectar nuevos nodos que podrían ser CF
+        for (const node of mutation.addedNodes) {
+          if (node.nodeType === Node.ELEMENT_NODE) {
+            const el = node;
+            if (el.className && (
+                el.className.includes('cf-') ||
+                el.className.includes('cb-') ||
+                el.className.includes('challenge') ||
+                el.className.includes('main-wrapper')
+              )) {
+              console.log('🔍 Posible elemento CF detectado via MutationObserver:', el.className);
+              // Trigger immediate check
+              setTimeout(() => isCloudflareChallenge(), 100);
+            }
+          }
+        }
+      }
+    });
+    
+    // Observar cambios en todo el documento
+    cfMutationObserver.observe(document.body || document.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['class', 'id', 'data-cf', 'data-sitekey']
+    });
+    
+    // Verificación periódica cada 2 segundos
+    cfCheckInterval = setInterval(() => {
+      if (state.running) {
+        isCloudflareChallenge();
+      }
+    }, 2000);
+    
+    console.log('🔍 Monitoreo activo de Cloudflare iniciado');
+  };
+  
+  // Detener monitoreo cuando sea necesario
+  const stopCloudflareMonitoring = () => {
+    if (cfMutationObserver) {
+      cfMutationObserver.disconnect();
+      cfMutationObserver = null;
+    }
+    if (cfCheckInterval) {
+      clearInterval(cfCheckInterval);
+      cfCheckInterval = null;
+    }
+    cloudflareDetected = false;
+    console.log('🔍 Monitoreo de Cloudflare detenido');
+  };
+
   const handleChallengeIfNeeded = async () => {
     if (!isChallengePresent()) return 'none';
-    const t = getTranslations();
-    updateUI(t.msgCFChallenge, 'warning');
     
-    // Manejo especializado para el desafío checkbox
-    const els = findChallengeElements();
-    if (els.length > 0) {
-      const el = els[0];
+    const t = getTranslations();
+    updateUI(`🔍 ${t.msgCFChallenge}`, 'warning');
+    
+    // Detección ultra-rápida de elemento visible
+    const element = findVisibleChallengeElements();
+    
+    if (element) {
+      updateUI('🎯 Elemento CF encontrado, resolviendo...', 'info');
       
-      // Si es un checkbox, hacer clic directo
-      if (el.type === 'checkbox') {
-        try {
-          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          await sleep(500);
-          el.click();
-          updateUI('🔘 Checkbox marcado', 'success');
-        } catch {
-          // Fallback: clic en el centro
-          clickElementCenter(el);
+      // Intentar click rápido
+      const success = await clickChallengeElement(element);
+      
+      if (success) {
+        updateUI('🔘 Checkbox marcado, verificando...', 'success');
+        
+        // Verificación rápida (solo 5 segundos)
+        for (let i = 5; i > 0; i--) {
+          if (!isChallengePresent()) {
+            updateUI(t.msgCFValidated, 'success');
+            cloudflareDetected = false; // Reset para futuras detecciones
+            return 'solved';
+          }
+          updateUI(`⏳ Verificando... ${i}s`, 'default');
+          await new Promise(resolve => setTimeout(resolve, 1000));
         }
-      } else {
-        // Para otros elementos, clic en el centro
-        try { 
-          el.scrollIntoView({ behavior: 'smooth', block: 'center' }); 
-        } catch {}
-        await sleep(250);
-        clickElementCenter(el);
       }
     }
     
-    // Espera más larga para el checkbox (hasta 10s)
-    for (let i = 10; i > 0; i--) {
-      if (!isChallengePresent()) break;
-      updateUI(t.msgCFBackoff(`${i}s`), 'default');
-      await sleep(1000);
-    }
-
-    if (!isChallengePresent()) {
-      updateUI(t.msgCFValidated, 'success');
-      return 'solved';
-    }
-    
-    // No se resolvió: detener y pedir intervención manual
+    // Si llegamos aquí, no se pudo resolver automáticamente
+    // Detener bot y solicitar intervención manual
     try {
       const tr = getTranslations();
       const toggleBtn = document.querySelector('#toggleBtn');
@@ -804,8 +894,9 @@
         toggleBtn.classList.add('wplace-btn-primary');
         toggleBtn.classList.remove('wplace-btn-stop');
       }
-      updateUI(tr.msgCFManual, 'warning');
+      updateUI('🚨 Cloudflare requiere intervención manual', 'warning');
     } catch {}
+    
     return 'manual';
   };
 
@@ -1487,6 +1578,9 @@
       toggleBtn.innerHTML = `<i class="fas fa-play"></i> <span>${tr.start}</span>`;
       toggleBtn.classList.add('wplace-btn-primary');
       toggleBtn.classList.remove('wplace-btn-stop');
+      
+      // Detener monitoreo de Cloudflare
+      stopCloudflareMonitoring();
     };
 
   toggleBtn.addEventListener('click', async () => {
@@ -1497,6 +1591,10 @@
         toggleBtn.classList.add('wplace-btn-stop');
   try { await initChargesFromServerOnce(); } catch {}
   updateUI(t.msgStart, 'success');
+    
+    // Iniciar monitoreo de Cloudflare
+    startCloudflareMonitoring();
+    
     paintLoop();
       } else {
         stopBot();
