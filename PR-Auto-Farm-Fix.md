@@ -1,112 +1,112 @@
-# WPlace Auto-Farm — Refactor: UI-driven painting, API-aware charges, resilient CF handling, and UX/i18n upgrades
+# WPlace Auto-Farm — Refactor: UI‑driven painting, API‑aware charges, resilient CF handling, and UX/i18n upgrades
 
 ## TL;DR
-Este PR reemplaza el flujo antiguo basado en llamadas directas al backend por un flujo de automatización a través de la UI del sitio, sincroniza las cargas mediante una estrategia consciente del endpoint /me (sin hacer polling continuo), mejora sustancialmente la detección y resolución del desafío de Cloudflare, añade soporte i18n amplio y herramientas de recuperación/diagnóstico. Resultado: flujo más humano, menos frágil, con mejor resiliencia operativa y feedback al usuario.
+This PR replaces the legacy backend-driven painting flow with on-page UI automation, syncs charges via a lean strategy around the /me endpoint (no background polling), significantly strengthens Cloudflare challenge detection and resolution, and adds broad i18n plus recovery/diagnostic tooling. Result: a more human, less brittle flow with better operational resilience and clearer user feedback.
 
-## Motivación (por qué)
-El script previo (`ViejoAutoFarm.js`) pintaba con peticiones directas al backend y una lógica mínima de UI/estado. Esto lo hacía más propenso a bloqueos (CF), a desincronización de cargas y a roturas por cambios de DOM o límites de ritmo de la API. Se necesitaba un enfoque más humano —usando la propia UI del sitio— y una detección de Cloudflare mucho más robusta que evitara falsos positivos y reaccionara rápido.
+## Motivation (why)
+The previous script (`ViejoAutoFarm.js`) painted by sending direct backend requests with minimal UI/state logic. That made it prone to Cloudflare lockouts, charge desynchronization, and breakage due to DOM changes or API pacing limits. We needed a more human approach—using the site’s own UI—and a much stronger Cloudflare detection that avoids false positives and reacts quickly.
 
-## Comparativa: Viejo vs Nuevo
-- Antes (ViejoAutoFarm.js)
-  - Pintado vía POST directo a `https://backend.wplace.live/s0/pixel/...` con color aleatorio.
-  - Cargas consultadas con `/me` de forma directa y con poca lógica de sincronización.
-  - Selección de idioma basada en IP (ipapi), con alcance limitado (pt/en) y mayor fragilidad.
-  - UI simple: panel básico con Start/Stop y contador; sin multi-selección ni cooldowns realistas.
-  - Sin manejo explícito de Cloudflare; no prevenía intentos de pintado durante un desafío activo.
+## Comparison: Old vs New
+- Before (ViejoAutoFarm.js)
+  - Painting via direct POST to `https://backend.wplace.live/s0/pixel/...` with a random color.
+  - Charges fetched from `/me` directly with limited synchronization logic.
+  - Language chosen via IP (ipapi) with limited coverage (pt/en) and added fragility.
+  - Simple UI: basic Start/Stop and counters; no multi-select or realistic cooldown handling.
+  - No explicit Cloudflare handling; it could attempt to paint while a challenge was active.
 
-- Ahora (Auto-Farm.js)
-  - Pintado 100% vía UI: abre paleta, elige color válido, marca posiciones y pulsa Paint; evita acciones que provocan zoom o paneo accidental.
-  - Modelo de cargas consciente: se inicializa desde `/me` al iniciar y tras cada Paint exitoso (sin polling en background). Durante la espera usa el countdown del botón Paint.
-  - Multi-selección: permite marcar N cuadrados en un mismo burst (Ctrl/Cmd) para consumir múltiples cargas en un click (configurable y persistido).
-  - Detección Cloudflare avanzada: combinación de red (Performance API), DOM (visibilidad real), texto multiidioma, MutationObserver y clicks rápidos con varias estrategias.
-  - i18n por idioma de navegador: `pt`, `en`, `es`, `fr`, `ru`, `nl`, `uk`; textos/labels estandarizados.
-  - UX: panel con stats, ajustes persistidos (confirm wait, resume threshold, max fails, squares per action), gear con acciones útiles (calibrar zoom, reset, sync /me, check health).
-  - Robustez: recarga segura con persistencia de estado y auto-resume; recuperación de zoom solo bajo error con cooldown; throttling de stats.
+- Now (Auto-Farm.js)
+  - 100% UI-driven painting: opens the palette, picks a valid color, marks positions, and presses Paint; avoids gestures that could cause accidental zoom or panning.
+  - Charge model: initialized from `/me` at Start and re-synced after each successful Paint (no background polling). While waiting, it relies on the Paint button’s countdown.
+  - Multi-select: mark N squares in a single burst (Ctrl/Cmd) to consume multiple charges in one click (configurable and persisted).
+  - Cloudflare detection: combined signals from network (Performance API), DOM (real visibility), multi-language text, a MutationObserver, and fast click strategies.
+  - i18n based on browser language: `pt`, `en`, `es`, `fr`, `ru`, `nl`, `uk`; standardized labels/messages.
+  - UX: panel with stats, persisted settings (confirm wait, resume threshold, max fails, squares per action), and a gear with useful actions (calibrate zoom, reset, sync /me, check health).
+  - Robustness: safe reload with state persistence and auto-resume; zoom recovery only on failures with cooldown; throttled stats updates.
 
-## Alcance (qué cambia)
-- Pintado vía UI con control de paleta, áreas y confirmación Paint.
-- Cargas: se consultan una vez al iniciar y tras cada Paint exitoso. En backoff (HTTP 400 de /me) se pausan las llamadas 10 pinturas y se pinta 1 pixel por acción.
-- Enfriamientos/tiempos: confirmación tras Paint con countdown en vivo; espera en tiempo real con tick de 1s; mínimo recomendado de 10s para confirmación.
-- Cloudflare: nueva detección/gestión (ver sección técnica). El bot evita pintar si el desafío está activo.
-- i18n y UX: mejoras de textos, controles y acciones del gear; persistencia de ajustes.
+## Scope (what changes)
+- UI-driven painting with palette control, area marking, and Paint confirmation.
+- Charges: fetched once at Start and after each successful Paint. If `/me` returns HTTP 400 (temporary CF ban), pause `/me` calls for the next 10 paints and paint 1 pixel per action during the backoff.
+- Cooldowns/timing: confirmation wait after Paint with a live countdown; real-time wait with 1s ticks; advisory minimum of 10s for confirmation.
+- Cloudflare: new detection/handling (see technical section). The bot avoids painting while a challenge is active.
+- i18n and UX: improved texts, controls, and gear actions; settings are persisted.
 
-Fuera de alcance:
-- Cambios de backend o contratos de API. El PR sólo consume `/me` y opcionalmente `/health`.
-- Heurísticas complejas de pathing para elegir áreas “inteligentes”. Se mantiene objetivo simple/no repetitivo.
+Out of scope:
+- Backend changes or API contract changes. This PR only consumes `/me` and optionally `/health`.
+- Complex pathing heuristics to choose “smart” areas. The goal remains simple/non-repetitive marking.
 
-## Detalles técnicos clave
+## Key technical details
 
-### Pintado por UI y cadencia humana
-- Encuentra el botón Paint y la paleta en el DOM; abre la paleta si está cerrada.
-- Selecciona un color válido detectado desde la UI (excluye deshabilitados/baneados; fallback robusto a 1..31).
-- Marca N posiciones (Ctrl/Cmd) con pequeñas pausas y jitter para cadencia humana.
-- Confirma Paint una sola vez, consumiendo múltiples cargas si están disponibles.
-- Evita doble click y pan/drag para prevenir zoom involuntario.
+### UI painting and human cadence
+- Finds the Paint button and palette via DOM; opens the palette if closed.
+- Picks a valid color detected in the UI (ignores disabled/banned; robust fallback to 1..31).
+- Marks N positions (Ctrl/Cmd) with small pauses and jitter for a human cadence.
+- Confirms Paint once, consuming multiple charges if available.
+- Avoids double-clicks and pan/drag to keep zoom/viewport stable.
 
-### Cargas y cooldown
-- Semilla de cargas/cooldown desde `/me` al Start; tras cada Paint exitoso, vuelve a consultar `/me` para sincronizar recontado exacto.
-- Durante la espera usa el countdown del botón Paint (mm:ss) y muestra el ETA en la UI con tick de 1s.
-- Si `/me` devuelve 400 (ban temporal CF), entra en backoff: pausa `/me` por 10 pinturas, muestra estado “API pausada” y pinta sólo 1 pixel por acción.
+### Charges and cooldown
+- Seeds charges/cooldown from `/me` on Start; after each successful Paint, calls `/me` again to reconcile the exact remaining charges.
+- While waiting, uses the Paint button countdown (mm:ss) and shows ETA in the UI with 1s ticks.
+- If `/me` returns HTTP 400 (temporary CF ban), enters backoff: pause `/me` for 10 paints, show “API paused” status, and paint only 1 pixel per action.
 
-### Detección y manejo de Cloudflare (mejorado)
-- Detección combinada y sin falsos positivos por “logs”:
-  - Red: Performance API detecta recursos de `challenges.cloudflare.com`/`cdn-cgi/challenge-platform`.
-  - DOM visible real: selectores CF (p.ej., `.cb-lb input[type="checkbox"]`, `.cf-challenge`, `#challenge-overlay`, `div[id^="cf-chl-widget"]`) con verificación estricta de visibilidad (bounding rect, estilos, opacidad y on-screen).
-  - Texto multiidioma: frases clave como “Verify you are human / Verifica que eres un ser humano / Vérifiez que vous êtes humain / …” en ES/EN/FR/RU/NL/UK.
-  - MutationObserver: vigilancia de cambios DOM en tiempo real para reaccionar al aparecer el reto.
-- Resolución rápida del checkbox: scroll al centro, 3 estrategias de click (nativa + MouseEvent + click por coordenadas en centro), verificación inmediata (`checked`/`aria-checked`).
-- Verificación tras click: espera breve (5s). Si el desafío persiste, detiene el bot, informa en UI y pide intervención manual (evita loops).
-- Nota: Se evita “detectar sólo por log” (p. ej., mensajes como “resource preloaded but not used”) para no contar falsos positivos si el widget no está visible en pantalla.
+### Cloudflare detection and handling (improved)
+- Combined detection, designed to avoid log-only false positives:
+  - Network: Performance API detects `challenges.cloudflare.com` / `cdn-cgi/challenge-platform` resources.
+  - Real visible DOM: CF selectors (e.g., `.cb-lb input[type="checkbox"]`, `.cf-challenge`, `#challenge-overlay`, `div[id^="cf-chl-widget"]`) with strict visibility checks (bounding rect, styles, opacity, and on-screen position).
+  - Multi-language text: key phrases such as “Verify you are human / Verifica que eres un ser humano / Vérifiez que vous êtes humain / …” across ES/EN/FR/RU/NL/UK.
+  - MutationObserver: real-time watch for DOM changes to react when the challenge appears.
+- Fast checkbox resolution: center scroll, three click strategies (native `.click()`, MouseEvent, coordinate-based centered click), immediate verification via `checked`/`aria-checked`.
+- Post-click verification: short wait (5s). If the challenge remains, the bot stops, updates the UI, and asks for manual intervention (prevents loops).
+- Note: We deliberately do not “detect via logs only” (e.g., “resource preloaded but not used” messages) to avoid false positives when the widget is not actually visible on screen.
 
-### UX, i18n y herramientas
-- Ajustes persistidos: confirm wait, resume threshold, max consecutive fails, squares per action, auto-calibrate on fail.
-- Gear: Calibrate zoom (rutina de recuperación), Reset counter, Refresh /me now (manejo explícito de 400), Check health (`/health`) con resumen compacto.
-- Detalles i18n: idioma por navegador (pt, en, es, fr, ru, nl, uk); labels estandarizados.
+### UX, i18n, and tooling
+- Persisted settings: confirm wait, resume threshold, max consecutive fails, squares per action, auto-calibrate on fail.
+- Gear: Calibrate zoom (recovery routine), Reset counter, Refresh /me now (explicit 400 handling), Check health (`/health`) with a compact summary.
+- i18n details: browser language (pt, en, es, fr, ru, nl, uk); standardized labels.
 
-### Estabilidad y recarga segura
-- Guardas para evitar prompts de beforeunload; recarga segura con persistencia de estado y auto-resume (espera hasta 15s por UI).
-- Zoom recovery: sólo al fallar pintado, con cooldown; dos pasos de zoom-in tras detectar hint post-zoom-out.
-- Throttling de actualizaciones de stats para evitar reflows excesivos.
+### Stability and safe reload
+- Guards to suppress beforeunload prompts; safe reload with state persistence and auto-resume (waits up to 15s for UI readiness).
+- Zoom recovery: only on paint failure, with cooldown; two controlled zoom-in steps after detecting the hint post-zoom-out.
+- Throttled stats updates to avoid excessive reflows.
 
-## Pruebas y validación (cómo probar)
-1. Abrir wplace.live, asegurarse de ver el botón Paint y la paleta cuando se abre.
-2. Inyectar/ejecutar Auto-Farm y pulsar Start.
-3. Verificar: abre paleta si es necesario, elige color válido, marca una zona aleatoria sin repetir y pulsa Paint.
-4. Configurar “Squares per action” > 1 (ej. 3) y, con suficientes cargas, comprobar consumo múltiple en un único Paint. Si hay menos cargas que las solicitadas, debe consumir las disponibles.
-5. Con cargas, el bot pinta en bursts hasta agotarlas; luego espera en tiempo real con tick 1s hasta que reaparezcan.
-6. Si aparece Cloudflare (pantalla/overlay/checkbox): debe detectar rápidamente, hacer un click y esperar 5s. Si sigue, parar y mostrar mensaje de intervención manual.
-7. Bajar “Confirm wait” por debajo de 10s: el campo debe mostrar advertencia localizada y resaltado (no cambia el valor automáticamente). A 10s o más, desaparece la advertencia.
-8. Forzar fallos de pintado: observar la rutina de recuperación de zoom (cuando esté habilitada) y que no se repita en bucle.
-9. Abrir el gear y probar: Reset counter, Refresh /me now (manejo de 400 con backoff visible), Check health (resumen JSON). 
-10. Validar auto-resume tras recarga segura cuando se supere el umbral de errores consecutivos.
+## Testing and validation (how to test)
+1. Open wplace.live and ensure the Paint button and the palette are visible when opened.
+2. Inject/execute Auto-Farm and press Start.
+3. Verify: opens the palette if needed, picks a valid color, marks a non-repeating random area, and presses Paint.
+4. Set “Squares per action” > 1 (e.g., 3) and, with enough charges, confirm multiple-charge consumption in a single Paint. If fewer charges are available than requested, it should consume exactly those available.
+5. With charges available, the bot paints in bursts until exhausted; then it waits in real time with 1s ticks until charges return.
+6. If a Cloudflare challenge appears (page/overlay/checkbox): it should detect it quickly, click once, and wait 5s. If it persists, the bot should stop and display a manual intervention message.
+7. Set “Confirm wait” below 10s: the field should show a localized advisory and highlight (the value is not auto-changed). At 10s or more, the advisory disappears.
+8. Force paint failures: observe the zoom recovery routine (when enabled) and verify it does not loop.
+9. Open the gear and try: Reset counter, Refresh /me now (400 handling with visible backoff), Check health (compact JSON summary).
+10. Validate auto-resume after a safe reload when the max consecutive fails threshold is exceeded.
 
-## Impacto en compatibilidad
-- Mantiene fallback legacy para `START_X/START_Y` cuando la región aún no está disponible.
-- No introduce dependencias externas nuevas.
-- Interacción de UI en lugar de llamadas directas al pixel endpoint; el backend se usa sólo para `/me` y `/health` (opcional).
+## Compatibility impact
+- Keeps legacy fallback for `START_X/START_Y` when the region isn’t available yet.
+- Introduces no new external dependencies.
+- Uses UI interactions instead of direct pixel endpoint calls; backend is only used for `/me` and optionally `/health`.
 
-## Riesgos y mitigaciones
-- Cambios de DOM en la paleta o el botón Paint podrían romper selectores.
-  - Mitigación: selectores genéricos + fallback de color; endurecer selectores en follow-ups si aparecen regresiones.
-- El desafío de CF puede variar su estructura.
-  - Mitigación: detección combinada (red + DOM visible + texto + MutationObserver) y estrategia de click múltiple; fácil extensión de frases/idiomas y selectores.
-- Desajustes entre UI y valores de `/me` por latencia.
-  - Mitigación: sincronización tras cada Paint exitoso; no hay polling de fondo.
+## Risks and mitigations
+- DOM changes in the palette or Paint button might break selectors.
+  - Mitigation: generic selectors + color fallback; we can harden selectors in follow-ups if regressions appear.
+- CF challenge HTML may vary.
+  - Mitigation: combined detection (network + visible DOM + text + MutationObserver) and multi-click strategy; easy to extend phrases/languages and selectors.
+- UI vs `/me` values may drift due to latency.
+  - Mitigation: reconcile after each successful Paint; no background polling otherwise.
 
-## Plan de reversión
-- Revertir a `ViejoAutoFarm.js` o volver a la versión anterior de `Auto-Farm.js` en caso de incidentes críticos. No hay migraciones persistentes.
+## Rollback plan
+- Revert to `ViejoAutoFarm.js` or to the previous `Auto-Farm.js` version in case of critical incidents. No persistent migrations.
 
-## Checklist del Pull Request
-- [x] Pintado a través de la UI con selección de color válida y confirmación Paint.
-- [x] Multi-selección de N cuadros con Ctrl/Cmd (persistido y configurable).
-- [x] Modelo de cargas consciente de `/me` (inicio y post-Paint, sin polling). Backoff en HTTP 400.
-- [x] Detección CF mejorada: red + DOM visible + texto + MutationObserver + click rápido; evita falsos positivos por logs.
-- [x] UX/i18n: textos normalizados (pt, en, es, fr, ru, nl, uk), advertencias y ajustes persistidos.
-- [x] Seguridad operacional: recarga segura sin prompts y auto-resume.
-- [x] Zoom recovery con cooldown; sin panning/drag ni doble click accidental.
-- [x] Throttling de stats; sin dependencias nuevas.
+## Pull Request checklist
+- [x] UI-driven painting with valid color selection and Paint confirmation.
+- [x] Multi-select N squares with Ctrl/Cmd (persisted and configurable).
+- [x] `/me`-aware charge model (on Start and after Paint; no polling). Backoff on HTTP 400.
+- [x] Improved CF detection: network + visible DOM + text + MutationObserver + fast click; avoids log-only false positives.
+- [x] UX/i18n: normalized texts (pt, en, es, fr, ru, nl, uk), advisories, and persisted settings.
+- [x] Operational safety: safe reload without prompts and auto-resume.
+- [x] Zoom recovery with cooldown; no panning/drag and no accidental double-clicks.
+- [x] Throttled stats; no new dependencies.
 
-## Notas adicionales
-- El mensaje de consola “The resource ... challenge-platform ... was preloaded but not used...” ya no dispara detección por sí mismo: se usa sólo como señal de red junto con DOM visible/texto para evitar falsos positivos si el widget no aparece en pantalla.
-- El sistema de monitorización puede extenderse (más idiomas, nuevos selectores de CF) sin cambiar el flujo principal.
+## Additional notes
+- The console message “The resource … challenge-platform … was preloaded but not used…” no longer triggers detection by itself: it’s only used as a network signal in combination with visible DOM and/or text to avoid false positives when the widget isn’t on screen.
+- The monitoring system is extensible (more languages, new CF selectors) without changing the main flow.
 
