@@ -1,152 +1,112 @@
-# Fix Auto-Farm: human-like UI automation, API-aware charges, real-time cooldown, and CF challenge handling
+# WPlace Auto-Farm — Refactor: UI-driven painting, API-aware charges, resilient CF handling, and UX/i18n upgrades
 
-## Summary
-Refactors Auto-Farm to operate via site UI and minimize backend calls: it selects valid colors, clicks on random unvisited pixels, ensures the palette is open, selects a color, and confirms by pressing Paint. It can now mark multiple squares per action (user-configurable) via Ctrl/Cmd multi-select, consuming multiple charges at once, and waits cooldown with 1s updates. To keep charge counts exact without polling, the script seeds from /me at Start and then fetches /me once after each successful paint to know how many charges remain; during waiting, it relies on the button UI (x/y and (mm:ss)) for display. If /me returns HTTP 400 (temporary Cloudflare ban), the bot pauses /me calls for the next 10 paints and clearly indicates that API calls are paused; during this backoff it paints only 1 pixel per action. Cloudflare challenge detection has been strengthened (including full-page “Checking your Browser…” screens and overlays) and the bot tries a single, center click on the most visible widget and waits 5s; if unresolved, it informs the user and stops. Stability is improved with a safe auto-reload that preserves settings, avoids “unsaved changes” prompts, and auto-resumes painting after reload. Zoom calibration is no longer performed on start; instead, a conservative zoom adjustment is attempted as a recovery after paint failures (with cooldown to avoid repetition), and there is a manual “Calibrate zoom” action in the floating gear. Additionally, the confirmation wait setting now includes an advisory minimum of 10s: if the value is below 10s, the input shows a localized warning and is highlighted in red (the value is not auto-changed).
+## TL;DR
+Este PR reemplaza el flujo antiguo basado en llamadas directas al backend por un flujo de automatización a través de la UI del sitio, sincroniza las cargas mediante una estrategia consciente del endpoint /me (sin hacer polling continuo), mejora sustancialmente la detección y resolución del desafío de Cloudflare, añade soporte i18n amplio y herramientas de recuperación/diagnóstico. Resultado: flujo más humano, menos frágil, con mejor resiliencia operativa y feedback al usuario.
 
-## Changes
-- Painting logic (UI + API)
-  - Clicks random unvisited points within the canvas (central 90% area with margins), tracking a coarse grid to avoid repeats.
-  - Ensures palette is open before color selection (Paint → area → color → Paint), as the palette closes after painting.
-  - Presses the on-page Paint button to commit the action, and consumes all available charges in bursts.
-  - New: user can choose how many squares to mark per action; the bot multi-selects that many positions (Ctrl on Win/Linux, Cmd on macOS) before confirming Paint. If the requested amount exceeds available charges, it consumes all current charges.
-  - Immediately shows a “pixel painted” success message and effect when Paint is clicked, then starts a live confirmation countdown (default 10s). After confirming success, it fetches /me once to sync remaining charges. If the API returns 400, it enters a backoff: skip /me for the next 10 paints and show an API paused status in stats.
-  - Avoids panning/drag gestures and avoids any double-clicks to prevent accidental zoom.
-  - Zoom is not auto-adjusted on start. If a paint attempt fails, the bot tries a recovery: zoom out until the on-page hint is visible, then two small zoom-in steps, with pauses, and resumes painting. A cooldown prevents running this too often.
-  - Charges model: /me is fetched once on Start to seed charges/cooldown; after each successful paint, the bot fetches /me to update the remaining charges. There is no background polling otherwise. Manual sync from the gear remains available (with HTTP 400 handling).
-- Color handling
-  - Extract available colors from the DOM (`[id^="color-"]`), ignoring disabled entries (with SVG) and banned IDs (0, 5).
-  - Fallback to a valid random color (1..31) if palette detection fails.
-- Internationalization
-  - Browser-based language detection.
-  - Added translations: `pt`, `en`, `es`, `fr`, `ru`, `nl`, `uk`; standardized keys (minimize, loading, status messages). Includes label for the new “max fails” setting.
-- UX and guidance
-  - Fixed Start/Stop toggle HTML and tooltips; consistent theme and labels.
-  - Panel settings: confirmation wait seconds, resume threshold, max consecutive fails, and squares per action (all persisted).
-  - Added a “Calibrate zoom” action in a floating settings gear (bottom-left) with i18n (pt, en, es, fr, ru, nl, uk) that runs the zoom routine on demand, plus a toggle “Auto-calibrate on fail”.
-  - Moved the settings gear inside the main panel, small and tucked in the bottom-right of the panel content under the status line, to avoid covering page controls.
-  - New gear actions: “Reset counter” (reset painted pixels and retries), “Refresh /me now” with API call and explicit 400 handling (temporary Cloudflare ban), and “Check health” to query https://backend.wplace.live/health and show a compact status (up, DB, uptime), e.g. {"database":true,"up":true,"uptime":"5h47m38.958463875s"}.
-- Performance and pacing
-  - Stats panel updates are throttled.
-  - Cooldown handling uses the UI button countdown (mm:ss) and waits in real time (1s tick) until charges are available. The stats panel no longer shows a dedicated "Cooldown/Espera" row.
-  - Increased base delay between intra-burst actions with jitter for a more human cadence.
-  - Added a configurable confirmation wait (default 10s) with live countdown after each paint to align with site processing time.
-  - Charges are fetched immediately after successful paints; no periodic polling is performed. When /me is paused due to a 400, paints proceed without API sync for 10 paints, and the stats show “API: Paused (N paints)”. During /me backoff, the bot paints conservatively (1 pixel per action). On paint failures while backoff is active, it waits 2 minutes before the next attempt; if errors continue and exceed the configured max fails, it reloads the page as usual.
-  - Confirm wait advisory: if the confirmation wait is set below 10s, the field is highlighted in red and a localized warning is shown to suggest a safe minimum. The value is not auto-modified.
-  - Auto-reload safety: if too many consecutive paint errors occur, the page reloads automatically; user settings persist, the reload suppresses “changes may not be saved” prompts, and the bot auto-resumes (waits for UI readiness up to 15s).
-## Human-like operation improvements
-- UI-driven painting only: selects a valid palette color, clicks a random unvisited pixel area, and presses the Paint button.
-- No double-clicks and no panning to avoid unintended zoom or viewport movement.
- - Does not paint as soon as 1 charge is available; waits for a configurable “resume charges” threshold after reaching 0 (default randomized between a min/max range) to appear more human.
- - Zoom recovery routine (on errors): zooms out to show the hint and then performs two small zoom-in steps to enable painting; limited by a cooldown.
+## Motivación (por qué)
+El script previo (`ViejoAutoFarm.js`) pintaba con peticiones directas al backend y una lógica mínima de UI/estado. Esto lo hacía más propenso a bloqueos (CF), a desincronización de cargas y a roturas por cambios de DOM o límites de ritmo de la API. Se necesitaba un enfoque más humano —usando la propia UI del sitio— y una detección de Cloudflare mucho más robusta que evitara falsos positivos y reaccionara rápido.
 
-## Robustness
-  - Null-safe access in stats.
-  - Removed IP-based language fetch.
-  - Minimal reliance on backend: only /me for charges/cooldown; painting is executed through UI.
-    - Cloudflare challenge detection: clicks the widget once and waits 5s; if not solved, the bot stops and asks the user to click it and wait 5s, then Start again.
-    - Safe auto-reload after repeated failures with state persistence, no beforeunload prompts, and robust auto-start after reload.
+## Comparativa: Viejo vs Nuevo
+- Antes (ViejoAutoFarm.js)
+  - Pintado vía POST directo a `https://backend.wplace.live/s0/pixel/...` con color aleatorio.
+  - Cargas consultadas con `/me` de forma directa y con poca lógica de sincronización.
+  - Selección de idioma basada en IP (ipapi), con alcance limitado (pt/en) y mayor fragilidad.
+  - UI simple: panel básico con Start/Stop y contador; sin multi-selección ni cooldowns realistas.
+  - Sin manejo explícito de Cloudflare; no prevenía intentos de pintado durante un desafío activo.
 
-## Rationale
-- Backend requires region-aware URLs with absolute coords; previous logic could target unintended areas.
-- Using the on-page palette avoids blocked colors and mismatch with available dyes.
-- Browser language is more stable than external geo lookups.
-- Throttling avoids API spam and potential rate limits.
+- Ahora (Auto-Farm.js)
+  - Pintado 100% vía UI: abre paleta, elige color válido, marca posiciones y pulsa Paint; evita acciones que provocan zoom o paneo accidental.
+  - Modelo de cargas consciente: se inicializa desde `/me` al iniciar y tras cada Paint exitoso (sin polling en background). Durante la espera usa el countdown del botón Paint.
+  - Multi-selección: permite marcar N cuadrados en un mismo burst (Ctrl/Cmd) para consumir múltiples cargas en un click (configurable y persistido).
+  - Detección Cloudflare avanzada: combinación de red (Performance API), DOM (visibilidad real), texto multiidioma, MutationObserver y clicks rápidos con varias estrategias.
+  - i18n por idioma de navegador: `pt`, `en`, `es`, `fr`, `ru`, `nl`, `uk`; textos/labels estandarizados.
+  - UX: panel con stats, ajustes persistidos (confirm wait, resume threshold, max fails, squares per action), gear con acciones útiles (calibrar zoom, reset, sync /me, check health).
+  - Robustez: recarga segura con persistencia de estado y auto-resume; recuperación de zoom solo bajo error con cooldown; throttling de stats.
 
-## Technical Notes
-- Paint action is driven by the on-page Paint button found via DOM queries; order is enforced: ensure palette open → pick area → pick color → confirm Paint.
-- Cooldown is primarily taken from the UI (button (mm:ss) countdown); the bot waits in real time (every 1s) until charges are available. After confirming a successful paint, it fetches /me once to synchronize the remaining charges for subsequent actions. The stats panel omits a standalone cooldown value.
-  - Squares per action: the script first selects a color, then marks N positions using Ctrl/Cmd modifier flags in mouse events to multi-select, and finally confirms Paint to consume multiple charges in one action. Success is computed by comparing API charge deltas and, as a secondary signal, the UI x/y counters.
-  - Zoom automation (recovery only): uses WheelEvent over the main canvas to zoom out (limited attempts with pauses) until the “Zoom in to see the pixels” hint button is visible, then performs exactly two small zoom-in steps with 1s intervals. Also available via the UI button.
-  - Charges sync strategy: initializes from /me once at Start (with UI fallback), then calls /me after each successful paint to get the exact remaining charges. No background polling during idle/wait loops; manual refresh in the gear calls /me on demand with error handling.
-- Cloudflare challenge handling: detect iframes/widgets (Turnstile/hCaptcha-like) and full-page CF screens (“Checking your Browser…”, overlays, challenge-platform scripts). On detection, the bot clicks the widget once and waits 5 seconds; if still present, the bot stops and shows a message to resolve manually and restart. A pre-paint check is also performed before each attempt to avoid trying to paint while a challenge is active.
-- Avoid accidental zoom: removed second “assist” click on canvas to prevent double-click zoom gestures.
- - After each Paint attempt, success is verified by checking that the integer charges decreased via the /me endpoint; stats are updated accordingly.
-   - New settings in the panel: confirmation wait seconds; resume threshold (charges) after hitting 0; and max consecutive fails before safe reload. If no resume threshold is provided, a random value in a configurable range is used.
-   - Safe reload guard: before reloading, handlers and listeners for beforeunload are neutralized to avoid any “changes may not be saved” prompts. After reload, the bot waits up to 15s for the UI to be ready and auto-presses Start.
+## Alcance (qué cambia)
+- Pintado vía UI con control de paleta, áreas y confirmación Paint.
+- Cargas: se consultan una vez al iniciar y tras cada Paint exitoso. En backoff (HTTP 400 de /me) se pausan las llamadas 10 pinturas y se pinta 1 pixel por acción.
+- Enfriamientos/tiempos: confirmación tras Paint con countdown en vivo; espera en tiempo real con tick de 1s; mínimo recomendado de 10s para confirmación.
+- Cloudflare: nueva detección/gestión (ver sección técnica). El bot evita pintar si el desafío está activo.
+- i18n y UX: mejoras de textos, controles y acciones del gear; persistencia de ajustes.
 
-### Delta (2025-08-13)
-- API-aware charges and real-time cooldown:
-  - Use /me to fetch charges and cooldownMs; wait live (1s tick) until charges > 0.
-  - Consume all charges in bursts with small human-like delays between actions.
-- UI sequence and zoom fix:
-  - Enforce Paint → area → color → Paint ordering, reopening palette if needed.
-  - Removed the second canvas click to avoid accidental double-click zoom.
-  - Removed auto-zoom on start; added zoom recovery after failures with cooldown.
-- Cloudflare challenge handling:
-  - Detect iframes/widgets indicative of a challenge (Cloudflare/Turnstile/challenge classes) and full-page CF pages (“Checking your Browser…”, overlay, challenge-platform script presence).
-  - On detection, the bot clicks the widget once and waits exactly 5 seconds.
-  - If the challenge remains, the bot stops automatically and shows a clear message asking you to click it and wait 5s, then Start again.
-  - Added a pre-paint challenge check inside each burst to prevent attempts while a challenge is active.
-  - If solved after pressing Paint, retry confirming Paint automatically.
- - Stability and persistence:
-   - Added UI setting “max fails” (MAX_CONSEC_FAILS) to control when a safe reload is triggered; persisted across sessions.
-   - Implemented a no-prompt reload guard to suppress any “unsaved changes” dialogs.
-   - Auto-resume after reload improved: waits for the Start button for up to 15s and starts automatically.
- - Squares per action:
-   - New UI setting “Squares per action” persisted across sessions.
-   - Multi-select N points per action using Ctrl (Windows/Linux) or Cmd (macOS) and confirm Paint to consume multiple charges at once.
-   - If N exceeds available charges, the action consumes all currently available charges.
- - Minimal /me usage:
-   - Query /me once at Start and after each successful Paint; no background polling otherwise. A manual “Refresh /me now” in the gear forces a call to /me and handles HTTP 400 (temporary Cloudflare ban). If /me returns 400, the bot pauses all /me calls for the next 10 paints, shows a clear API paused status, and reduces to 1 pixel per paint during the backoff.
- - Health endpoint:
-   - New “Check health” action in the gear queries https://backend.wplace.live/health and displays a compact summary in the status line. Example: {"database":true,"up":true,"uptime":"5h47m38.958463875s"}.
- - Confirmation wait advisory:
-   - When the “Confirm wait” is set below 10s, the input is highlighted in red and a localized warning is displayed to suggest a safe minimum. No automatic change is made to the user’s value.
- - Settings gear actions:
-   - Calibrate zoom: run the recovery zoom routine on demand.
-   - Auto-calibrate on fail: if enabled, performs a zoom calibration when a paint fails (with cooldown to avoid loops).
-   - Reset counter: zero both painted pixels and retry counter immediately.
-   - Refresh /me now: call /me immediately and update the local charges; on HTTP 400, show a “temporarily banned by Cloudflare” message.
+Fuera de alcance:
+- Cambios de backend o contratos de API. El PR sólo consume `/me` y opcionalmente `/health`.
+- Heurísticas complejas de pathing para elegir áreas “inteligentes”. Se mantiene objetivo simple/no repetitivo.
 
-### Background/unattended operation notes
-- Keep the tab open; avoid opening DevTools while the bot runs (may trigger extra challenges).
-- The bot introduces jitter and exponential backoff to reduce request regularity and comply with pacing.
-- If the site requires periodic human interaction, the assisted flow will prompt and resume with minimal friction.
-- Preflight is disabled while a challenge is active to avoid aggravating it.
+## Detalles técnicos clave
 
-## Backwards Compatibility
-- Keeps legacy fallback for `START_X/START_Y` when region isn’t captured yet.
-- UI remains compact and consistent with existing theme.
+### Pintado por UI y cadencia humana
+- Encuentra el botón Paint y la paleta en el DOM; abre la paleta si está cerrada.
+- Selecciona un color válido detectado desde la UI (excluye deshabilitados/baneados; fallback robusto a 1..31).
+- Marca N posiciones (Ctrl/Cmd) con pequeñas pausas y jitter para cadencia humana.
+- Confirma Paint una sola vez, consumiendo múltiples cargas si están disponibles.
+- Evita doble click y pan/drag para prevenir zoom involuntario.
 
-## How to Test
-1. Open `wplace.live` and ensure the color palette and the Paint button are visible.
-2. Execute Auto-Farm (bookmarklet/console injector) and click Start.
-3. The script opens Paint, selects a color, marks a random unvisited spot (or multiple spots based on the setting), and presses Paint.
-4. Set “Squares per action” to a value > 1 (e.g., 3) and verify that, with enough charges, it consumes 3 charges in one action; if charges are fewer than requested, it consumes exactly the available charges.
-5. With multiple charges available, it will paint in bursts using them all, with brief pauses.
-6. If there are no charges, it waits in real-time (updates every 1s) until charges appear; stats show charges (no cooldown row).
-7. If a Cloudflare challenge appears, the bot clicks the widget once and waits 5 seconds. If it remains, the bot stops and shows a message to click it manually and wait 5s, then press Start again.
-8. Verify that auto-zoom does not run on start. To test zoom recovery, force a few paint failures; the bot will attempt zoom calibration once (respecting a cooldown) and continue.
-9. Click the “Calibrate zoom” button to run the routine on demand and confirm you can paint afterwards.
-10. Open the gear inside the panel and use:
-  - “Reset counter” to zero stats; verify the Pixels count resets and errors counter clears.
-  - “Refresh /me now” to force a call to /me; verify charges/cooldown update. If the API returns 400, a “temporary Cloudflare ban” message should appear.
-  - Toggle “Auto-calibrate on fail” on/off and provoke a paint error to see the zoom routine run (or not) accordingly.
-11. Validation hint: set “Confirm wait” to 5 seconds; the input should be red and a localized warning message should appear under the field. Change it to 10 seconds or more; the warning disappears and the field returns to normal.
-11. (Optional) Simulate a slow network: the UI should remain responsive and charges should still update when the API responds; the manual refresh can be used to fetch immediately.
-12. Set “Reintentos/Max fails” to a small number (e.g., 1 or 2), provoke paint errors (e.g., by blocking clicks), and observe: the page reloads without any “changes may not be saved” prompt, and the bot auto-resumes after reload.
+### Cargas y cooldown
+- Semilla de cargas/cooldown desde `/me` al Start; tras cada Paint exitoso, vuelve a consultar `/me` para sincronizar recontado exacto.
+- Durante la espera usa el countdown del botón Paint (mm:ss) y muestra el ETA en la UI con tick de 1s.
+- Si `/me` devuelve 400 (ban temporal CF), entra en backoff: pausa `/me` por 10 pinturas, muestra estado “API pausada” y pinta sólo 1 pixel por acción.
 
-## Risks and Mitigations
-- DOM changes in the palette may break color extraction.
-  - Mitigation: fallback to a random valid color (1..31); consider selector hardening in follow-ups.
-- If the board tile size differs from 100, random placement may drift.
-  - Mitigation: `PIXELS_PER_LINE` is configurable; we can add auto-detection later.
+### Detección y manejo de Cloudflare (mejorado)
+- Detección combinada y sin falsos positivos por “logs”:
+  - Red: Performance API detecta recursos de `challenges.cloudflare.com`/`cdn-cgi/challenge-platform`.
+  - DOM visible real: selectores CF (p.ej., `.cb-lb input[type="checkbox"]`, `.cf-challenge`, `#challenge-overlay`, `div[id^="cf-chl-widget"]`) con verificación estricta de visibilidad (bounding rect, estilos, opacidad y on-screen).
+  - Texto multiidioma: frases clave como “Verify you are human / Verifica que eres un ser humano / Vérifiez que vous êtes humain / …” en ES/EN/FR/RU/NL/UK.
+  - MutationObserver: vigilancia de cambios DOM en tiempo real para reaccionar al aparecer el reto.
+- Resolución rápida del checkbox: scroll al centro, 3 estrategias de click (nativa + MouseEvent + click por coordenadas en centro), verificación inmediata (`checked`/`aria-checked`).
+- Verificación tras click: espera breve (5s). Si el desafío persiste, detiene el bot, informa en UI y pide intervención manual (evita loops).
+- Nota: Se evita “detectar sólo por log” (p. ej., mensajes como “resource preloaded but not used”) para no contar falsos positivos si el widget no está visible en pantalla.
 
-## Checklist
-- [x] Palette-based color selection with safe fallback
-- [x] i18n detection and translations (pt, en, es, fr, ru, nl, uk)
-- [x] Stats throttling and cooldown handling via UI countdown (with API sync after paint)
-- [x] Null-safe UI updates
-- [x] No new runtime dependencies introduced
-- [x] Cloudflare challenge detection and auto-handling with user notification fallback
-- [x] Burst painting using all available charges, with human-like delays
- - [x] Safe reload without beforeunload prompts and with auto-resume
- - [x] Max consecutive fails adjustable in UI and persisted
- - [x] Squares per action with Ctrl/Cmd multi-select and persisted setting
- - [x] Zoom recovery routine (not on Start), and manual Calibrate button
- - [x] Charges seeded from /me at Start and synced after each successful paint (no background polling)
- - [x] Gear actions: Reset counter and Refresh /me now (with i18n)
- - [x] Auto-calibrate on fail toggle and gear repositioned above page button
+### UX, i18n y herramientas
+- Ajustes persistidos: confirm wait, resume threshold, max consecutive fails, squares per action, auto-calibrate on fail.
+- Gear: Calibrate zoom (rutina de recuperación), Reset counter, Refresh /me now (manejo explícito de 400), Check health (`/health`) con resumen compacto.
+- Detalles i18n: idioma por navegador (pt, en, es, fr, ru, nl, uk); labels estandarizados.
 
-## Related
-- Aligns Auto-Farm behavior with Auto-Image’s service contracts and UX expectations.
+### Estabilidad y recarga segura
+- Guardas para evitar prompts de beforeunload; recarga segura con persistencia de estado y auto-resume (espera hasta 15s por UI).
+- Zoom recovery: sólo al fallar pintado, con cooldown; dos pasos de zoom-in tras detectar hint post-zoom-out.
+- Throttling de actualizaciones de stats para evitar reflows excesivos.
+
+## Pruebas y validación (cómo probar)
+1. Abrir wplace.live, asegurarse de ver el botón Paint y la paleta cuando se abre.
+2. Inyectar/ejecutar Auto-Farm y pulsar Start.
+3. Verificar: abre paleta si es necesario, elige color válido, marca una zona aleatoria sin repetir y pulsa Paint.
+4. Configurar “Squares per action” > 1 (ej. 3) y, con suficientes cargas, comprobar consumo múltiple en un único Paint. Si hay menos cargas que las solicitadas, debe consumir las disponibles.
+5. Con cargas, el bot pinta en bursts hasta agotarlas; luego espera en tiempo real con tick 1s hasta que reaparezcan.
+6. Si aparece Cloudflare (pantalla/overlay/checkbox): debe detectar rápidamente, hacer un click y esperar 5s. Si sigue, parar y mostrar mensaje de intervención manual.
+7. Bajar “Confirm wait” por debajo de 10s: el campo debe mostrar advertencia localizada y resaltado (no cambia el valor automáticamente). A 10s o más, desaparece la advertencia.
+8. Forzar fallos de pintado: observar la rutina de recuperación de zoom (cuando esté habilitada) y que no se repita en bucle.
+9. Abrir el gear y probar: Reset counter, Refresh /me now (manejo de 400 con backoff visible), Check health (resumen JSON). 
+10. Validar auto-resume tras recarga segura cuando se supere el umbral de errores consecutivos.
+
+## Impacto en compatibilidad
+- Mantiene fallback legacy para `START_X/START_Y` cuando la región aún no está disponible.
+- No introduce dependencias externas nuevas.
+- Interacción de UI en lugar de llamadas directas al pixel endpoint; el backend se usa sólo para `/me` y `/health` (opcional).
+
+## Riesgos y mitigaciones
+- Cambios de DOM en la paleta o el botón Paint podrían romper selectores.
+  - Mitigación: selectores genéricos + fallback de color; endurecer selectores en follow-ups si aparecen regresiones.
+- El desafío de CF puede variar su estructura.
+  - Mitigación: detección combinada (red + DOM visible + texto + MutationObserver) y estrategia de click múltiple; fácil extensión de frases/idiomas y selectores.
+- Desajustes entre UI y valores de `/me` por latencia.
+  - Mitigación: sincronización tras cada Paint exitoso; no hay polling de fondo.
+
+## Plan de reversión
+- Revertir a `ViejoAutoFarm.js` o volver a la versión anterior de `Auto-Farm.js` en caso de incidentes críticos. No hay migraciones persistentes.
+
+## Checklist del Pull Request
+- [x] Pintado a través de la UI con selección de color válida y confirmación Paint.
+- [x] Multi-selección de N cuadros con Ctrl/Cmd (persistido y configurable).
+- [x] Modelo de cargas consciente de `/me` (inicio y post-Paint, sin polling). Backoff en HTTP 400.
+- [x] Detección CF mejorada: red + DOM visible + texto + MutationObserver + click rápido; evita falsos positivos por logs.
+- [x] UX/i18n: textos normalizados (pt, en, es, fr, ru, nl, uk), advertencias y ajustes persistidos.
+- [x] Seguridad operacional: recarga segura sin prompts y auto-resume.
+- [x] Zoom recovery con cooldown; sin panning/drag ni doble click accidental.
+- [x] Throttling de stats; sin dependencias nuevas.
+
+## Notas adicionales
+- El mensaje de consola “The resource ... challenge-platform ... was preloaded but not used...” ya no dispara detección por sí mismo: se usa sólo como señal de red junto con DOM visible/texto para evitar falsos positivos si el widget no aparece en pantalla.
+- El sistema de monitorización puede extenderse (más idiomas, nuevos selectores de CF) sin cambiar el flujo principal.
+
